@@ -117,12 +117,14 @@ class Thermostat(CarrierEntity, ClimateEntity):
     @property
     def current_humidity(self) -> int | None:
         """Return current humidity."""
-        return self._status_zone.humidity
+        zone = self._find_status_zone()
+        return zone.humidity if zone else None
 
     @property
     def current_temperature(self) -> float | None:
         """Return current temperature."""
-        return self._status_zone.temperature
+        zone = self._find_status_zone()
+        return zone.temperature if zone else None
 
     @property
     def temperature_unit(self) -> str:
@@ -155,21 +157,34 @@ class Thermostat(CarrierEntity, ClimateEntity):
     @property
     def hvac_action(self) -> HVACAction | str | None:
         """Return hvac action."""
+        zone = self._find_status_zone()
         if self.hvac_mode == HVACMode.OFF:
             return HVACAction.OFF
-        elif self._status_zone.conditioning is None or self._status_zone.conditioning == "idle":
+        if zone is None:
+            return None
+        elif zone.conditioning is None or zone.conditioning == "idle":
             return HVACAction.IDLE
-        elif "heat" in self._status_zone.conditioning:
+        elif "heat" in zone.conditioning:
             return HVACAction.HEATING
-        elif "cool" in self._status_zone.conditioning:
+        elif "cool" in zone.conditioning:
             return HVACAction.COOLING
-        elif self._status_zone.fan == FanModes.OFF:
+        elif zone.fan == FanModes.OFF:
             return HVACAction.IDLE
         else:
             return HVACAction.FAN
 
     def _current_activity(self) -> ConfigZoneActivity:
-        return self._config_zone.find_activity(self._status_zone.current_activity)
+        zone = self._find_status_zone()
+        if zone is None:
+            raise ValueError("Status Zone not available")
+        return self._config_zone.find_activity(zone.current_activity)
+
+    def _safe_current_activity(self) -> ConfigZoneActivity | None:
+        """Return current activity or None when zone/config data is transiently missing."""
+        try:
+            return self._current_activity()
+        except Exception:
+            return None
 
     @property
     def target_temperature_step(self) -> float:
@@ -183,26 +198,35 @@ class Thermostat(CarrierEntity, ClimateEntity):
         """Return target temperature."""
         # Use actual setpoints from status, not config activity lookup
         # This fixes bug where API returns stale currentActivity but correct htsp/clsp
+        zone = self._find_status_zone()
+        if zone is None:
+            return None
         if self.hvac_mode == HVACMode.HEAT:
-            return self._status_zone.heat_set_point
+            return zone.heat_set_point
         if self.hvac_mode == HVACMode.COOL:
-            return self._status_zone.cool_set_point
+            return zone.cool_set_point
         return None
 
     @property
     def target_temperature_high(self) -> float | None:
         """Return target temperature high."""
         # Use actual setpoints from status, not config activity lookup
+        zone = self._find_status_zone()
+        if zone is None:
+            return None
         if self.hvac_mode == HVACMode.HEAT_COOL:
-            return self._status_zone.cool_set_point
+            return zone.cool_set_point
         return None
 
     @property
     def target_temperature_low(self) -> float | None:
         """Return target temperature low."""
         # Use actual setpoints from status, not config activity lookup
+        zone = self._find_status_zone()
+        if zone is None:
+            return None
         if self.hvac_mode == HVACMode.HEAT_COOL:
-            return self._status_zone.heat_set_point
+            return zone.heat_set_point
         return None
 
     @property
@@ -216,8 +240,11 @@ class Thermostat(CarrierEntity, ClimateEntity):
     def preset_mode(self) -> str | None:
         """Return preset mode by matching actual setpoints to configured activities."""
         # Get actual setpoints from status (not from activity lookup)
-        actual_heat = self._status_zone.heat_set_point
-        actual_cool = self._status_zone.cool_set_point
+        zone = self._find_status_zone()
+        if zone is None:
+            return None
+        actual_heat = zone.heat_set_point
+        actual_cool = zone.cool_set_point
         # Find which activity matches these setpoints
         for activity in self._config_zone.activities:
             if (activity.heat_set_point == actual_heat and
@@ -225,20 +252,26 @@ class Thermostat(CarrierEntity, ClimateEntity):
                 return activity.type.value
         # No match found - fall back to API's reported activity
         # This could happen during transitions or with custom setpoints
-        _LOGGER.debug(
-            f"Zone {self._config_zone.name}: No activity matched setpoints "
-            f"(heat={actual_heat}, cool={actual_cool}). "
-            f"Falling back to API activity: {self._current_activity().type.value}"
-        )
-        return self._current_activity().type.value
+        current_activity = self._safe_current_activity()
+        if current_activity is not None:
+            _LOGGER.debug(
+                f"Zone {self._config_zone.name}: No activity matched setpoints "
+                f"(heat={actual_heat}, cool={actual_cool}). "
+                f"Falling back to API activity: {current_activity.type.value}"
+            )
+            return current_activity.type.value
+        return None
 
     @property
     def fan_mode(self) -> str | None:
         """Return fan mode."""
-        if self._current_activity().fan == FanModes.OFF:
+        current_activity = self._safe_current_activity()
+        if current_activity is None:
+            return None
+        if current_activity.fan == FanModes.OFF:
             return FAN_AUTO
         else:
-            return self._current_activity().fan.value
+            return current_activity.fan.value
 
     async def async_set_humidity(self, humidity: int) -> None:
         """Set new target humidity."""
@@ -362,11 +395,12 @@ class Thermostat(CarrierEntity, ClimateEntity):
     @property
     def extra_state_attributes(self) -> Mapping[str, Any] | None:
         """Return extra state attributes."""
+        zone = self._find_status_zone()
         return {
-            "conditioning": self._status_zone.conditioning,
+            "conditioning": zone.conditioning if zone else None,
             "status_mode": self.carrier_system.status.mode,
             "blower_rpm": self.carrier_system.status.blower_rpm,
-            "damper_position": self._status_zone.damper_position,
+            "damper_position": zone.damper_position if zone else None,
             "hold_activity": self._hold_activity_name,
             "hold_until": self._hold_until,
         }
@@ -374,4 +408,7 @@ class Thermostat(CarrierEntity, ClimateEntity):
     @property
     def available(self) -> bool:
         """Return true if sensor is ready for display."""
-        return self._status_zone is not None and self._current_activity() is not None
+        if not super().available:
+            return False
+        zone = self._find_status_zone()
+        return zone is not None and self._safe_current_activity() is not None

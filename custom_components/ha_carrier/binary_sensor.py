@@ -84,7 +84,8 @@ class OccupancySensor(CarrierEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool | None:
         """Return true if occupied."""
-        return self._status_zone.occupancy
+        zone = self._find_status_zone()
+        return zone.occupancy if zone else None
 
     @property
     def available(self) -> bool:

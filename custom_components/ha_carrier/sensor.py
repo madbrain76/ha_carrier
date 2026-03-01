@@ -86,7 +86,8 @@ class ZoneHumiditySensor(CarrierEntity, SensorEntity):
     @property
     def native_value(self) -> float:
         """Returns temperature."""
-        return self._status_zone.humidity
+        zone = self._find_status_zone()
+        return zone.humidity if zone else None
 
     @property
     def available(self) -> bool:
@@ -276,7 +277,8 @@ class ZoneTemperatureSensor(CarrierEntity, SensorEntity):
     @property
     def native_value(self) -> float:
         """Returns temperature."""
-        return self._status_zone.temperature
+        zone = self._find_status_zone()
+        return zone.temperature if zone else None
 
     @property
     def available(self) -> bool:

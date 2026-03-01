@@ -1,6 +1,6 @@
 """Update data from carrier api."""
 from datetime import timedelta, datetime, UTC
-from logging import Logger, getLogger
+from logging import Logger, getLogger, DEBUG
 
 
 from carrier_api import ApiConnectionGraphql, System, Energy
@@ -72,10 +72,7 @@ class CarrierDataUpdateCoordinator(DataUpdateCoordinator):
                             related_stale_system.status = fresh_system.status
                             related_stale_system.config = fresh_system.config
                             related_stale_system.energy = fresh_system.energy
-                for system in self.systems:
-                    _LOGGER.debug(
-                        async_redact_data(system.__repr__(), TO_REDACT_MAPPED)
-                    )
+                self._log_system_snapshots()
                 self.timestamp_all_data = datetime.now(UTC)
                 self.timestamp_energy = self.timestamp_all_data
                 self.data_flush = False
@@ -100,6 +97,17 @@ class CarrierDataUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("unrecognized error so retying in default 30 minutes but refreshing all data then.")
             raise UpdateFailed(error) from error
 
+    def _log_system_snapshots(self) -> None:
+        """Safely log redacted system snapshots when debug logging is enabled."""
+        if not _LOGGER.isEnabledFor(DEBUG):
+            return
+        for system in self.systems or []:
+            try:
+                _LOGGER.debug(async_redact_data(system.__repr__(), TO_REDACT_MAPPED))
+            except Exception:
+                # Logging must never break coordinator updates/callbacks.
+                _LOGGER.exception("failed to render system snapshot for debug logging")
+
     def system(self, system_serial: str) -> System | None:
         for system in self.systems:
             if system.profile.serial == system_serial:
@@ -108,8 +116,5 @@ class CarrierDataUpdateCoordinator(DataUpdateCoordinator):
     async def updated_callback(self, _message: str) -> None:
         self.timestamp_websocket = datetime.now(UTC)
         _LOGGER.debug("websocket updated system")
-        for system in self.systems:
-            _LOGGER.debug(
-                async_redact_data(system.__repr__(), TO_REDACT_MAPPED)
-            )
+        self._log_system_snapshots()
         self.async_update_listeners()

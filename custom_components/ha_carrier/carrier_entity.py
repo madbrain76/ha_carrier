@@ -33,13 +33,10 @@ class CarrierEntity(CoordinatorEntity[CarrierDataUpdateCoordinator]):
 
     @property
     def _status_zone(self) -> StatusZone:
-        if getattr(self, "zone_api_id", None) is not None:
-            for zone in self.carrier_system.status.zones:
-                if zone.api_id == self.zone_api_id:
-                    return zone
+        zone = self._find_status_zone()
+        if zone is None:
             raise ValueError(f"Status Zone not found: {self.zone_api_id}")
-        else:
-            raise ValueError("No zone api id defined")
+        return zone
 
     @property
     def _config_zone(self) -> ConfigZone:
@@ -51,6 +48,36 @@ class CarrierEntity(CoordinatorEntity[CarrierDataUpdateCoordinator]):
         else:
             raise ValueError("No zone api id defined")
 
+    def _find_status_zone(self) -> StatusZone | None:
+        zone_api_id = getattr(self, "zone_api_id", None)
+        if zone_api_id is None:
+            return None
+        zones = getattr(self.carrier_system.status, "zones", None)
+        if not zones:
+            return None
+        for zone in zones:
+            if zone.api_id == zone_api_id:
+                return zone
+        _LOGGER.debug(
+            "status zone %s missing for system %s",
+            zone_api_id,
+            self.carrier_system.profile.serial,
+        )
+        return None
+
+    def _find_config_zone(self) -> ConfigZone | None:
+        zone_api_id = getattr(self, "zone_api_id", None)
+        if zone_api_id is None:
+            return None
+        for zone in self.carrier_system.config.zones:
+            if zone.api_id == zone_api_id:
+                return zone
+        _LOGGER.debug(
+            "config zone %s missing for system %s",
+            zone_api_id,
+            self.carrier_system.profile.serial,
+        )
+        return None
     @property
     def device_info(self) -> DeviceInfo:
         """Return device info."""
